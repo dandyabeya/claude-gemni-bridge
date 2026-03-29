@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Claude-Gemini Bridge Diagnostics</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      padding: 32px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 { color: #89b4fa; margin-bottom: 8px; font-size: 24px; }
+    .subtitle { color: #6c7086; margin-bottom: 24px; font-size: 14px; }
+    .check {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      border-radius: 10px;
+      background: #313244;
+    }
+    .check.pass { border-left: 4px solid #a6e3a1; }
+    .check.fail { border-left: 4px solid #f38ba8; }
+    .check.warn { border-left: 4px solid #fab387; }
+    .check.running { border-left: 4px solid #89b4fa; }
+    .icon { font-size: 20px; min-width: 28px; text-align: center; }
+    .check-body h3 { font-size: 15px; margin-bottom: 4px; }
+    .check-body p { font-size: 13px; color: #a6adc8; line-height: 1.5; }
+    .check-body code {
+      background: #1e1e2e;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #f5c2e7;
+    }
+    .check-body pre {
+      background: #1e1e2e;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      margin-top: 8px;
+      overflow-x: auto;
+      color: #cdd6f4;
+    }
+    #runBtn {
+      background: #89b4fa;
+      color: #1e1e2e;
+      border: none;
+      padding: 12px 28px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 24px;
+    }
+    #runBtn:hover { background: #74c7ec; }
+    #results { margin-top: 16px; }
+    .summary {
+      padding: 16px;
+      border-radius: 10px;
+      margin-top: 20px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .summary.good { background: #1e3a2f; border: 1px solid #a6e3a1; }
+    .summary.bad { background: #3a1e2f; border: 1px solid #f38ba8; }
+    .copy-btn {
+      background: #45475a;
+      color: #cdd6f4;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-top: 12px;
+    }
+    .copy-btn:hover { background: #585b70; }
+  </style>
+</head>
+<body>
+  <h1>Claude-Gemini Bridge Diagnostics</h1>
+  <p class="subtitle">Click the button below to run all checks. Copy the report and paste it back to Claude Code.</p>
+  <button id="runBtn" onclick="runDiagnostics()">Run Diagnostics</button>
+  <div id="results"></div>
+
+  <script>
+    const BRIDGE_URL = 'http://127.0.0.1:52945';
+    const results = [];
+
+    function addCheck(id, status, title, detail) {
+      results.push({ id, status, title, detail });
+      const container = document.getElementById('results');
+      const icons = { pass: '✅', fail: '❌', warn: '⚠️', running: '🔄' };
+      const existing = document.getElementById('check-' + id);
+      const html = `
+        <div class="check ${status}" id="check-${id}">
+          <div class="icon">${icons[status]}</div>
+          <div class="check-body">
+            <h3>${title}</h3>
+            <p>${detail}</p>
+          </div>
+        </div>`;
+      if (existing) {
+        existing.outerHTML = html;
+      } else {
+        container.innerHTML += html;
+      }
+    }
+
+    async function runDiagnostics() {
+      const container = document.getElementById('results');
+      container.innerHTML = '';
+      results.length = 0;
+
+      // Check 1: Bridge server reachable
+      addCheck('server', 'running', 'Bridge Server', 'Checking connection...');
+      let serverOk = false;
+      try {
+        const resp = await fetch(`${BRIDGE_URL}/health`, { signal: AbortSignal.timeout(3000) });
+        const data = await resp.json();
+        if (data.status === 'running') {
+          addCheck('server', 'pass', 'Bridge Server', 'Server is running and reachable on port 52945.');
+          serverOk = true;
+        } else {
+          addCheck('server', 'fail', 'Bridge Server', 'Server responded but with unexpected status. Check server.js.');
+        }
+      } catch (e) {
+        addCheck('server', 'fail', 'Bridge Server',
+          `Cannot reach the server at <code>${BRIDGE_URL}</code>.<br>
+          Make sure you ran: <code>~/.claude/gemini-bridge/start.sh</code><br>
+          Error: ${e.message}`);
+      }
+
+      // Check 2: Pending updates
+      if (serverOk) {
+        addCheck('updates', 'running', 'Pending Updates', 'Checking queue...');
+        try {
+          const resp = await fetch(`${BRIDGE_URL}/updates`);
+          const updates = await resp.json();
+          if (updates.length > 0) {
+            addCheck('updates', 'warn', 'Pending Updates',
+              `There are <strong>${updates.length}</strong> undelivered update(s) in the queue. This means the extension has NOT picked them up yet.<pre>${JSON.stringify(updates, null, 2)}</pre>`);
+          } else {
+            addCheck('updates', 'pass', 'Pending Updates',
+              'Queue is empty. Either updates were delivered, or none have been sent yet.');
+          }
+        } catch (e) {
+          addCheck('updates', 'fail', 'Pending Updates', `Failed to check: ${e.message}`);
+        }
+
+        // Check 3: Can we post an update?
+        addCheck('post', 'running', 'POST Test', 'Sending test update...');
+        try {
+          const resp = await fetch(`${BRIDGE_URL}/updates`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: 'Diagnostic test ping', project: 'diagnostics', status: 'test' })
+          });
+          const data = await resp.json();
+          if (data.ok) {
+            addCheck('post', 'pass', 'POST Test', 'Successfully posted a test update to the server.');
+          } else {
+            addCheck('post', 'fail', 'POST Test', 'Server rejected the test update.');
+          }
+        } catch (e) {
+          addCheck('post', 'fail', 'POST Test', `Failed: ${e.message}`);
+        }
+      }
+
+      // Check 4: Chrome extension detection
+      addCheck('extension', 'running', 'Chrome Extension', 'Checking...');
+      // We can check if the extension's content script injected a marker
+      const extMarker = document.getElementById('claude-bridge-active');
+      // Since we're not on gemini.google.com, the content script won't run here.
+      // Instead, check if we can detect it via a different method.
+      addCheck('extension', 'warn', 'Chrome Extension',
+        `This diagnostic page cannot directly detect if the extension is installed (content scripts only run on gemini.google.com).<br><br>
+        <strong>Please verify manually:</strong><br>
+        1. Go to <code>chrome://extensions</code><br>
+        2. Look for "Claude → Gemini Bridge"<br>
+        3. Make sure it is <strong>enabled</strong> (toggle is blue)<br>
+        4. Check for any error badges (red icon) on the extension card<br>
+        5. If you just installed it, <strong>refresh your Gemini tab</strong> (Ctrl+R)`);
+
+      // Check 5: Gemini tab
+      addCheck('gemini', 'warn', 'Gemini Tab',
+        `This page cannot detect open tabs.<br><br>
+        <strong>Please verify:</strong><br>
+        1. You have <code>gemini.google.com</code> open in a tab in <strong>this same Chrome profile</strong><br>
+        2. The tab has a chat open (not just the landing page)<br>
+        3. You refreshed the Gemini tab <strong>after</strong> installing the extension`);
+
+      // Check 6: Test the full round-trip
+      if (serverOk) {
+        addCheck('roundtrip', 'running', 'Round-Trip Test', 'Posting update and waiting 8 seconds for extension to pick it up...');
+        // Post a test, wait, then check if it was cleared
+        await fetch(`${BRIDGE_URL}/clear`, { method: 'POST' });
+        await fetch(`${BRIDGE_URL}/updates`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: '[DIAGNOSTIC TEST] If you see this in Gemini, the bridge is working!',
+            project: 'diagnostics',
+            status: 'test'
+          })
+        });
+
+        await new Promise(r => setTimeout(r, 8000));
+
+        const resp = await fetch(`${BRIDGE_URL}/updates`);
+        const remaining = await resp.json();
+        if (remaining.length === 0) {
+          addCheck('roundtrip', 'pass', 'Round-Trip Test',
+            'The test update was picked up by the extension within 8 seconds! Check your Gemini tab — you should see the test message.');
+        } else {
+          addCheck('roundtrip', 'fail', 'Round-Trip Test',
+            `The update is still in the queue after 8 seconds. The extension did NOT pick it up.<br><br>
+            <strong>This means one of:</strong><br>
+            - The extension is not installed or not enabled<br>
+            - The Gemini tab is not open or needs a refresh<br>
+            - The extension cannot reach <code>http://127.0.0.1:52945</code> (check host_permissions in manifest.json)`);
+        }
+      }
+
+      // Generate report
+      generateReport();
+    }
+
+    function generateReport() {
+      const container = document.getElementById('results');
+      const failures = results.filter(r => r.status === 'fail');
+      const warnings = results.filter(r => r.status === 'warn');
+      const passes = results.filter(r => r.status === 'pass');
+
+      const reportLines = [
+        '=== CLAUDE-GEMINI BRIDGE DIAGNOSTIC REPORT ===',
+        `Date: ${new Date().toISOString()}`,
+        `Checks passed: ${passes.length}`,
+        `Checks failed: ${failures.length}`,
+        `Warnings: ${warnings.length}`,
+        '',
+        ...results.map(r => `[${r.status.toUpperCase()}] ${r.title}: ${r.detail.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()}`),
+        '',
+        '=== END REPORT ==='
+      ];
+
+      const reportText = reportLines.join('\n');
+      const isGood = failures.length === 0 && results.some(r => r.id === 'roundtrip' && r.status === 'pass');
+
+      container.innerHTML += `
+        <div class="summary ${isGood ? 'good' : 'bad'}">
+          <strong>${isGood ? 'All checks passed!' : `${failures.length} issue(s) found.`}</strong><br>
+          Copy the report below and paste it back into Claude Code so it can help fix any issues.
+        </div>
+        <button class="copy-btn" onclick="copyReport()">Copy Report to Clipboard</button>
+        <pre id="reportText" style="margin-top: 12px; font-size: 11px; max-height: 300px; overflow-y: auto;">${reportText}</pre>`;
+
+      window._diagnosticReport = reportText;
+    }
+
+    function copyReport() {
+      navigator.clipboard.writeText(window._diagnosticReport).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy Report to Clipboard', 2000);
+      });
+    }
+  </script>
+</body>
+</html>

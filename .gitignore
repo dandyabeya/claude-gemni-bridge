@@ -1,0 +1,6 @@
+channels/
+  updates.json                                                                               
+  last-response.json                                        
+  server.pid        
+  server.log
+  node_modules/

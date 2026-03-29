@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Claude → Gemini Bridge",
+  "version": "2.0",
+  "description": "Multi-channel bridge between Claude Code and Gemini",
+  "permissions": ["alarms", "tabs", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:52945/*",
+    "https://gemini.google.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon.png"
+    }
+  }
+}
